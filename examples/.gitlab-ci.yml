@@ -1,0 +1,22 @@
+Compliance Image Scan:
+  tags:
+    - appsec-team
+  image:
+    name: compliance_image_scanner:v1
+  variables:
+    # Стратегия Git
+    GIT_STRATEGY: none
+
+    # Для сканирования образов из приватных реестров
+    # необходимо определить глобальную переменную DOCKER_AUTH_CONFIG
+
+    # Для запуска сканирования необходимо указать
+    # путь до сканируемого образа в переменной COMPLIANCE_IMAGE_FULL_REF
+  
+  script: 
+     - python3 /home/nonroot/scan.py
+
+  artifacts:
+    paths:
+      - reports
+    expire_in: 1 day
