@@ -1,7 +1,7 @@
-import subprocess 
-import os 
+import subprocess
+import os
 import json
-import shlex 
+import shlex
 import shutil
 import sys
 from module.compliance_checks import Image
@@ -9,11 +9,13 @@ from module.compilers import compilers_list
 
 # Directory for saving reports inside container
 report_dir = os.environ.get("COMPLIANCE_REPORTS_DIR", "reports")
+prune_report_dir = os.environ.get("PRUNE_REPORTS_DIR", True)
 
 # image full path for scan
-# for example 
+# for example
 # COMPLIANCE_IMAGE_FULL_REF="docker.io/library/ubuntu:latest"
 image = os.environ.get("COMPLIANCE_IMAGE_FULL_REF", False)
+need_pull = os.environ.get("PULL_IMAGE", True)
 
 # Docker auth config for private repo
 auth_config = os.environ.get("DOCKER_AUTH_CONFIG", False)
@@ -47,56 +49,57 @@ def auth_repo(auth_config):
           os.makedirs(path)
           with open(file, "w") as auth_file:
              auth_file.write(auth_config)
-       except OSError: 
+       except OSError:
            print(f"Cannot write auth_config to {file}")
 
 
-def run_command(command, realtime_output): 
+def run_command(command, realtime_output):
     # Run command and return result
     if realtime_output is True:
-        process = subprocess.run(shlex.split(command), text=True, stdout=sys.stdout, stderr=sys.stderr) 
-        return process.stdout, process.stderr, process.returncode 
+        process = subprocess.run(shlex.split(command), text=True, stdout=sys.stdout, stderr=sys.stderr)
+        return process.stdout, process.stderr, process.returncode
     else:
         process = subprocess.run(shlex.split(command), capture_output=True, text=True)
-        return process.stdout, process.stderr, process.returncode 
+        return process.stdout, process.stderr, process.returncode
 
 
 def create_dir(report_dir):
-    try: 
+    try:
         if os.path.exists(report_dir) and os.path.isdir(report_dir):
-           shutil.rmtree(report_dir)
+           if prune_report_dir != "false":
+              shutil.rmtree(report_dir)
+              os.makedirs(report_dir)
+        else:
            os.makedirs(report_dir)
-        else: 
-           os.makedirs(report_dir)
-    except Exception as e: 
+    except Exception as e:
         print(f"{colorWarning}Error! Failed to create directory for reports!{colorDefault}")
-        exit(CANT_CREATE_REPORT_DIR)
+        sys.exit(CANT_CREATE_REPORT_DIR)
 
 
 def pull_image(image):
         command_pull = f"podman pull '{image}' --log-level=fatal"
-        stdout, stderr, returncode = run_command(command_pull, True) 
-        if returncode != 0:          
-            print(f"{colorWarning}Failed to pull image {image}{stderr}{colorDefault}") 
-            exit(CANT_PULL_IMAGE) 
-        else:            
+        stdout, stderr, returncode = run_command(command_pull, True)
+        if returncode != 0:
+            print(f"{colorWarning}Failed to pull image {image}{stderr}{colorDefault}")
+            sys.exit(CANT_PULL_IMAGE)
+        else:
             print(f"{colorGreen}Image pulled successfully{colorDefault}")
 
 
 def get_manifest(image):
         command_inspect = f"podman image inspect {image}"
-        stdout, stderr, returncode = run_command(command_inspect, False) 
-        if returncode != 0:                 
-            print(f"{colorWarning}Failed to get image manifest {image}{stderr}{colorDefault}") 
-            exit(CANT_GET_MANIFEST) 
+        stdout, stderr, returncode = run_command(command_inspect, False)
+        if returncode != 0:
+            print(f"{colorWarning}Failed to get image manifest {image}{stderr}{colorDefault}")
+            sys.exit(CANT_GET_MANIFEST)
         else:
             d = json.loads(stdout)
-            data = d[0]             
-            print(f"{colorGreen}Image manifest received successfully{colorDefault}")             
+            data = d[0]
+            print(f"{colorGreen}Image manifest received successfully{colorDefault}")
             return data
-        
 
-def main(image): 
+
+def main(image):
     # Auth config
     auth_repo(auth_config)
     # Create/refrest report dir
@@ -106,17 +109,20 @@ def main(image):
     if ':' not in image:
         image = f"{image}:latest"
     image_short = ('_'.join((image.split("/")[-1]).split(":")[-2::]))
-    print(f"{colorCyan}Image scanning started {image}{colorDefault}")        
-    # Loading image into podman     
-    print("1. Pulling the image")  
-    pull_image(image)
+    print(f"{colorCyan}Image scanning started {image}{colorDefault}")
+    # Loading image into podman
+    if need_pull != "false":
+        print("1. Pulling the image")
+        pull_image(image)
+    else:
+        print("1. Skip pulling the image")
     # Getting image manifest JSON manifest
     print("2. Getting the image manifest")
     data = get_manifest(image)
     image_name = image
     image_obj = Image(image_name)
-    # Launch checks           
-    print("3. Launch of compliance checks")      
+    # Launch checks
+    print("3. Launch of compliance checks")
     results = []
     results.append(image_obj.tagCheck())
     results.append(image_obj.exposeCheck(data))
@@ -130,9 +136,9 @@ def main(image):
     results.append(image_obj.fileCheck('-name su -type f -executable', 'su', data))
     results.append(image_obj.fileCheck('-name sshd -type f -executable', 'sshd', data))
     results.append(image_obj.fileCheck('-name ssh -type f -executable', 'ssh client', data))
-    results.append(image_obj.fileCheck('-name nc -type f -executable', 'nc', data))   
+    results.append(image_obj.fileCheck('-name nc -type f -executable', 'nc', data))
     results.append(image_obj.fileCheck('-name netcat -type f -executable', 'netcat', data))
-    results.append(image_obj.fileCheck('-name socat -type f -executable', 'socat', data))             
+    results.append(image_obj.fileCheck('-name socat -type f -executable', 'socat', data))
     results.append(image_obj.compCheck(compilers_list, data))
     results.append(image_obj.osCheck(data))
     result = {image: results}
@@ -144,27 +150,25 @@ def main(image):
         print(json.dumps(result, indent=4, ensure_ascii=False))
     # Choose exit code
     checks = result[image][0:]
-    severities = []
+    severities = set()
     for s in checks:
-        severities.append(s["Severity"])
-    for severity in severities:
-        match severity:
-            case "Critical":
-                exit(CRITICAL)
-            case "High":
-                exit(HIGH)
-            case "Medium":
-                exit(MEDIUM)
-            case "Low":
-                exit(LOW)
-            case "Informational":
-                exit(INFORMATIONAL)
+        severities.add(s["Severity"])
 
+    if "Critical" in severities:
+        sys.exit(CRITICAL)
+    if "High" in severities:
+        sys.exit(HIGH)
+    if "Medium" in severities:
+        sys.exit(MEDIUM)
+    if "Low" in severities:
+        sys.exit(LOW)
+    if "Informational" in severities:
+        sys.exit(INFORMATIONAL)
 
 if __name__ == "__main__":
    if not image:
-       print("The image is not specified in variable $COMPLIANCE_IMAGE_FULL_REF")       
-       exit(NOT_DEFINED_IMAGE) 
-   else:    
+       print("The image is not specified in variable $COMPLIANCE_IMAGE_FULL_REF")
+       sys.exit(NOT_DEFINED_IMAGE)
+   else:
        print(f"Image sent for scanning {image}")
        main(image)
